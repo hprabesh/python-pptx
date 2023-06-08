@@ -2,16 +2,24 @@
 
 """Chart-related objects such as Chart and ChartTitle."""
 
+from __future__ import (
+    absolute_import, division, print_function, unicode_literals
+)
+
+from collections import Sequence
+
 from pptx.chart.axis import CategoryAxis, DateAxis, ValueAxis
 from pptx.chart.legend import Legend
 from pptx.chart.plot import PlotFactory, PlotTypeInspector
 from pptx.chart.series import SeriesCollection
-from pptx.chart.xmlwriter import SeriesXmlRewriterFactory
-from pptx.compat import Sequence
+from pptx.chart.xmlwriter import SeriesXmlRewriterFactory, ChartXmlWriter
 from pptx.dml.chtfmt import ChartFormat
+from pptx.oxml.ns import _nsmap as namespaces
 from pptx.shared import ElementProxy, PartElementProxy
 from pptx.text.text import Font, TextFrame
 from pptx.util import lazyproperty
+from lxml import etree
+from io import BytesIO
 
 
 class Chart(PartElementProxy):
@@ -40,7 +48,7 @@ class Chart(PartElementProxy):
         if valAx_lst:
             return ValueAxis(valAx_lst[0])
 
-        raise ValueError("chart has no category axis")
+        raise ValueError('chart has no category axis')
 
     @property
     def chart_style(self):
@@ -77,10 +85,11 @@ class Chart(PartElementProxy):
 
     @property
     def chart_type(self):
-        """Member of :ref:`XlChartType` enumeration specifying type of this chart.
-
-        If the chart has two plots, for example, a line plot overlayed on a bar plot,
-        the type reported is for the first (back-most) plot. Read-only.
+        """
+        Read-only :ref:`XlChartType` enumeration value specifying the type of
+        this chart. If the chart has two plots, for example, a line plot
+        overlayed on a bar plot, the type reported is for the first
+        (back-most) plot.
         """
         first_plot = self.plots[0]
         return PlotTypeInspector.chart_type(first_plot)
@@ -89,10 +98,11 @@ class Chart(PartElementProxy):
     def font(self):
         """Font object controlling text format defaults for this chart."""
         defRPr = (
-            self._chartSpace.get_or_add_txPr()
-            .p_lst[0]
-            .get_or_add_pPr()
-            .get_or_add_defRPr()
+            self._chartSpace
+                .get_or_add_txPr()
+                .p_lst[0]
+                .get_or_add_pPr()
+                .get_or_add_defRPr()
         )
         return Font(defRPr)
 
@@ -189,7 +199,7 @@ class Chart(PartElementProxy):
         """
         valAx_lst = self._chartSpace.valAx_lst
         if not valAx_lst:
-            raise ValueError("chart has no value axis")
+            raise ValueError('chart has no value axis')
 
         idx = 1 if len(valAx_lst) > 1 else 0
         return ValueAxis(valAx_lst[idx])
@@ -202,6 +212,35 @@ class Chart(PartElementProxy):
         """
         return self.part.chart_workbook
 
+    def add_subchart(self, chart_type, chart_data, new_axis_refs=None):
+        xml_bytes = ChartXmlWriter(chart_type, chart_data).xml
+        root_el = etree.parse(BytesIO(xml_bytes.encode('utf-8')))
+        series_count = len(self._chartSpace.plotArea.xpath("*/c:ser"))
+
+        for el in root_el.xpath("/c:chartSpace/c:chart/c:plotArea/*", namespaces=namespaces):
+            if el.tag.endswith("Chart"):
+                # Chart element eg <c:lineChart>
+
+                if new_axis_refs is not None:
+                    # Remove all axis references
+                    existing_axis_ref = el.xpath("c:axId", namespaces=namespaces)
+                    for x in existing_axis_ref:
+                        el.remove(x)
+
+                    # Build new axis references
+                    for x in new_axis_refs:
+                        el.append(etree.Element("{%s}axId" % namespaces['c'], val=x))
+
+                # Need to increment series index to make PP happy
+                for i, x in enumerate(el.xpath("c:ser/c:idx", namespaces=namespaces)):
+                    x.set("val", str(series_count + i))
+                for i, x in enumerate(el.xpath("c:ser/c:order", namespaces=namespaces)):
+                    x.set("val", str(series_count + i))
+
+            # Need to remove unused axis to make PP happy
+            if new_axis_refs is None or new_axis_refs is not None and el.tag.endswith("Chart"):
+                self._chartSpace.plotArea.append(el)
+
 
 class ChartTitle(ElementProxy):
     """Provides properties for manipulating a chart title."""
@@ -210,6 +249,8 @@ class ChartTitle(ElementProxy):
     # into a base class, perhaps pptx.chart.shared.BaseTitle. I suspect they
     # actually differ in certain fuller behaviors, but at present they're
     # essentially identical.
+
+    __slots__ = ('_title', '_format')
 
     def __init__(self, title):
         super(ChartTitle, self).__init__(title)
@@ -265,7 +306,6 @@ class _Plots(Sequence):
     types are displayed in a single set of axes, like a bar plot with
     a superimposed line plot.
     """
-
     def __init__(self, plotArea, chart):
         super(_Plots, self).__init__()
         self._plotArea = plotArea
