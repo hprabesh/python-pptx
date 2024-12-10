@@ -6,7 +6,7 @@ from __future__ import (
     absolute_import, division, print_function, unicode_literals
 )
 
-from collections import Sequence
+from collections.abc import Sequence
 
 from pptx.chart.axis import CategoryAxis, DateAxis, ValueAxis
 from pptx.chart.legend import Legend
